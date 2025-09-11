@@ -8,6 +8,9 @@ end
 
 if status is-interactive # Commands to run in interactive sessions can go here
 
+    # Paths
+    set -U fish_user_paths /opt/rocm/bin ~/.local/bin
+
     # No greeting
     set fish_greeting
 
