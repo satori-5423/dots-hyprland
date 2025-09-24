@@ -250,7 +250,7 @@ Variants {
                     Rectangle {
                         opacity: GlobalStates.screenLocked ? 1 : 0
                         anchors.fill: parent
-                        color: CF.ColorUtils.transparentize(Appearance.colors.colLayer0, 0.7)
+                        color: "transparent" // CF.ColorUtils.transparentize(Appearance.colors.colLayer0, 0.7)
                     }
                 }
             }
