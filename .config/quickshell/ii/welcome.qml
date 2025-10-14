@@ -12,7 +12,6 @@ import QtQuick.Layouts
 import QtQuick.Window
 import Quickshell
 import Quickshell.Io
-import qs
 import qs.services
 import qs.modules.common
 import qs.modules.common.widgets
@@ -33,6 +32,7 @@ ApplicationWindow {
 
     Component.onCompleted: {
         MaterialThemeLoader.reapplyTheme();
+        Config.readWriteDelay = 0 // Welcome app always only sets one var at a time so delay isn't needed
     }
 
     minimumWidth: 600
