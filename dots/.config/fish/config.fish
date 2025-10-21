@@ -8,6 +8,11 @@ end
 
 if status is-interactive # Commands to run in interactive sessions can go here
 
+    # Paths
+    set -U fish_user_paths /opt/rocm/bin ~/.local/bin
+    set -x EDITOR nvim
+    set -x VISUAL nvim
+
     # No greeting
     set fish_greeting
 

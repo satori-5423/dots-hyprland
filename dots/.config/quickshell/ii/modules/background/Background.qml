@@ -96,7 +96,7 @@ Variants {
             left: true
             right: true
         }
-        color: CF.ColorUtils.transparentize(CF.ColorUtils.mix(Appearance.colors.colLayer0, Appearance.colors.colPrimary, 0.75), (bgRoot.wallpaperIsVideo ? 1 : 0))
+        color: "transparent" // CF.ColorUtils.transparentize(CF.ColorUtils.mix(Appearance.colors.colLayer0, Appearance.colors.colPrimary, 0.75), (bgRoot.wallpaperIsVideo ? 1 : 0))
         Behavior on color {
             animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
         }
@@ -253,7 +253,7 @@ Variants {
                     Rectangle {
                         opacity: GlobalStates.screenLocked ? 1 : 0
                         anchors.fill: parent
-                        color: CF.ColorUtils.transparentize(Appearance.colors.colLayer0, 0.7)
+                        color: "transparent" // CF.ColorUtils.transparentize(Appearance.colors.colLayer0, 0.7)
                     }
                 }
             }
@@ -262,7 +262,7 @@ Variants {
             Loader {
                 id: clockLoader
                 scale: Config.options.background.clock.scale
-                active: Config.options.background.clock.show
+                active: false && Config.options.background.clock.show
                 anchors {
                     left: wallpaper.left
                     top: wallpaper.top
