@@ -120,7 +120,7 @@ function sudo_init_keepalive(){
 function sudo_stop_keepalive(){
   if [[ -n "$SUDO_KEEPALIVE_PID" ]] && kill -0 "$SUDO_KEEPALIVE_PID" 2>/dev/null; then
     kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
-    wait "$SUDO_KEEPALIVE_PID" 2>/dev/null
+    wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     SUDO_KEEPALIVE_PID=""
   fi
 }
