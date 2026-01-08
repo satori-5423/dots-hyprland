@@ -94,8 +94,6 @@ metapkgs+=(./sdata/dist-arch/illogical-impulse-hyprland)
 metapkgs+=(./sdata/dist-arch/illogical-impulse-microtex-git)
 metapkgs+=(./sdata/dist-arch/illogical-impulse-quickshell-git)
 # metapkgs+=(./sdata/dist-arch/packages/illogical-impulse-oneui4-icons-git)
-[[ -f /usr/share/icons/Bibata-Modern-Classic/index.theme ]] || \
-  metapkgs+=(./sdata/dist-arch/illogical-impulse-bibata-modern-classic-bin)
 
 for i in "${metapkgs[@]}"; do
   metainstallflags="--needed"
