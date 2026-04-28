@@ -2,7 +2,7 @@
 %global shortcommit %(c=%{commit}; echo ${c:0:7})
 %global commits     719
 %global snapdate    20260213
-%global tag         4.0.0
+%global tag         4.1.0
 
 Name:               matugen
 Version:            %{tag}^%{commits}.%{shortcommit}
