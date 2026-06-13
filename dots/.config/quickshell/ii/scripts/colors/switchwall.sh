@@ -259,13 +259,30 @@ switch() {
         fi
     fi
 
-    # Determine mode if not set
+    # Determine mode if not set (before matugen for consistency with QML MaterialThemeLoader)
     if [[ -z "$mode_flag" ]]; then
-        current_mode=$(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null | tr -d "'")
-        if [[ "$current_mode" == "prefer-dark" ]]; then
-            mode_flag="dark"
-        else
-            mode_flag="light"
+        # Detect from colors.json background lightness (same as MaterialThemeLoader.qml)
+        if [[ -f "$STATE_DIR/user/generated/colors.json" ]]; then
+            bg=$(jq -r '.background' "$STATE_DIR/user/generated/colors.json" 2>/dev/null)
+            if [[ "$bg" =~ ^#[0-9A-Fa-f]{6}$ ]]; then
+                r=$((16#${bg:1:2})); g=$((16#${bg:3:2})); b=$((16#${bg:5:2}))
+                max=$(( r > g ? (r > b ? r : b) : (g > b ? g : b) ))
+                min=$(( r < g ? (r < b ? r : b) : (g < b ? g : b) ))
+                if (( max + min < 255 )); then
+                    mode_flag="dark"
+                else
+                    mode_flag="light"
+                fi
+            fi
+        fi
+        # Fallback to gsettings
+        if [[ -z "$mode_flag" ]]; then
+            current_mode=$(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null | tr -d "'")
+            if [[ "$current_mode" == "prefer-dark" ]]; then
+                mode_flag="dark"
+            else
+                mode_flag="light"
+            fi
         fi
     fi
 
