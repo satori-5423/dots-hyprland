@@ -237,7 +237,7 @@ v dedup_and_sort_listfile "${INSTALLED_LISTFILE}" "${INSTALLED_LISTFILE}"
 if [[ -f "$XDG_CONFIG_HOME/quickshell/ii/scripts/colors/switchwall.sh" ]]; then
   echo "Re-applying active theme and wallpaper settings..."
   export ILLOGICAL_IMPULSE_VIRTUAL_ENV="${ILLOGICAL_IMPULSE_VIRTUAL_ENV:-$XDG_STATE_HOME/quickshell/.venv}"
-  bash "$XDG_CONFIG_HOME/quickshell/ii/scripts/colors/switchwall.sh" --noswitch || true
+  bash "$XDG_CONFIG_HOME/quickshell/ii/scripts/colors/switchwall.sh" --noswitch > /dev/null 2>&1 || true
 fi
 
 # Prevent hyprland from not fully loaded
