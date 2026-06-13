@@ -233,12 +233,6 @@ fi
 v gen_firstrun
 v dedup_and_sort_listfile "${INSTALLED_LISTFILE}" "${INSTALLED_LISTFILE}"
 
-# Re-apply theme colors to ensure all apps/themes (like GTK, KDE kdeglobals) match the user's active preference after files are overwritten
-if [[ -f "$XDG_CONFIG_HOME/quickshell/ii/scripts/colors/switchwall.sh" ]]; then
-  echo "Re-applying active theme and wallpaper settings..."
-  export ILLOGICAL_IMPULSE_VIRTUAL_ENV="${ILLOGICAL_IMPULSE_VIRTUAL_ENV:-$XDG_STATE_HOME/quickshell/.venv}"
-  bash "$XDG_CONFIG_HOME/quickshell/ii/scripts/colors/switchwall.sh" --noswitch > /dev/null 2>&1 || true
-fi
 
 # Prevent hyprland from not fully loaded
 sleep 1
