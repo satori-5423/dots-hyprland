@@ -94,7 +94,9 @@ metapkgs=(./sdata/dist-arch/illogical-impulse-{audio,backlight,basic,fonts-theme
 metapkgs+=(./sdata/dist-arch/illogical-impulse-hyprland)
 metapkgs+=(./sdata/dist-arch/illogical-impulse-microtex-git)
 metapkgs+=(./sdata/dist-arch/illogical-impulse-quickshell-git)
-metapkgs+=(./sdata/dist-arch/illogical-impulse-bibata-modern-classic-bin)
+if ! pacman -Qq bibata-cursor-theme &>/dev/null && ! pacman -Qq bibata-cursor-theme-bin &>/dev/null; then
+  metapkgs+=(./sdata/dist-arch/illogical-impulse-bibata-modern-classic-bin)
+fi
 
 for i in "${metapkgs[@]}"; do
   metainstallflags="--needed"
