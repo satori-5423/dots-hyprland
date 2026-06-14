@@ -233,6 +233,15 @@ fi
 v gen_firstrun
 v dedup_and_sort_listfile "${INSTALLED_LISTFILE}" "${INSTALLED_LISTFILE}"
 
+# When light mode is selected, re-apply theme to sync KDE/gsettings
+# Same logic as the QML LightDarkPreferenceButton: switchwall.sh --mode light --noswitch
+if [[ -f "$XDG_CONFIG_HOME/quickshell/ii/scripts/colors/switchwall.sh" ]]; then
+  _mode=$(bash "$XDG_CONFIG_HOME/quickshell/ii/scripts/colors/switchwall.sh" --get-mode 2>/dev/null)
+  if [[ "$_mode" == "light" ]]; then
+    echo "Theme mode detected: light → re-applying theme in background (same as QML button)"
+    II_NO_TERM_RELOAD=1 bash "$XDG_CONFIG_HOME/quickshell/ii/scripts/colors/switchwall.sh" --mode light --noswitch > /tmp/ii-light-reapply.log 2>&1 &
+  fi
+fi
 
 # Prevent hyprland from not fully loaded
 sleep 1

@@ -31,7 +31,7 @@ handle_kde_material_you_colors() {
             kde_scheme_variant="scheme-tonal-spot" # default
             ;;
     esac
-    "$XDG_CONFIG_HOME"/matugen/templates/kde/kde-material-you-colors-wrapper.sh --scheme-variant "$kde_scheme_variant"
+    "$XDG_CONFIG_HOME"/matugen/templates/kde/kde-material-you-colors-wrapper.sh --scheme-variant "$kde_scheme_variant" 2>/dev/null
 }
 
 pre_process() {
@@ -111,6 +111,33 @@ is_video() {
     [[ "$extension" == "mp4" || "$extension" == "webm" || "$extension" == "mkv" || "$extension" == "avi" || "$extension" == "mov" ]] && return 0 || return 1
 }
 
+# Detect dark/light mode from colors.json (same formula as MaterialThemeLoader.qml: hslLightness < 0.5)
+# Outputs "dark" or "light" to stdout
+detect_mode_from_colors() {
+    if [[ -f "$STATE_DIR/user/generated/colors.json" ]]; then
+        local bg=$(jq -r '.background' "$STATE_DIR/user/generated/colors.json" 2>/dev/null)
+        if [[ "$bg" =~ ^#[0-9A-Fa-f]{6}$ ]]; then
+            local r=$((16#${bg:1:2})) g=$((16#${bg:3:2})) b=$((16#${bg:5:2}))
+            local max=$(( r > g ? (r > b ? r : b) : (g > b ? g : b) ))
+            local min=$(( r < g ? (r < b ? r : b) : (g < b ? g : b) ))
+            if (( max + min < 255 )); then
+                echo "dark"
+                return
+            else
+                echo "light"
+                return
+            fi
+        fi
+    fi
+    # Fallback to gsettings
+    local current_mode=$(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null | tr -d "'")
+    if [[ "$current_mode" == "prefer-dark" ]]; then
+        echo "dark"
+    else
+        echo "light"
+    fi
+}
+
 kill_existing_mpvpaper() {
     pkill -f -9 mpvpaper || true
 }
@@ -167,6 +194,7 @@ switch() {
     type_flag="$3"
     color_flag="$4"
     color="$5"
+    noswitch_flag="$6"
 
     # Start Gemini auto-categorization if enabled
     aiStylingEnabled=$(jq -r '.background.widgets.clock.cookie.aiStyling' "$SHELL_CONFIG_FILE")
@@ -193,7 +221,9 @@ switch() {
         fi
 
         check_and_prompt_upscale "$imgpath" &
-        kill_existing_mpvpaper
+        if [[ -z "$noswitch_flag" ]]; then
+            kill_existing_mpvpaper
+        fi
 
         if is_video "$imgpath"; then
             mkdir -p "$THUMBNAIL_DIR"
@@ -226,13 +256,15 @@ switch() {
             # Set wallpaper path
             set_wallpaper_path "$imgpath"
 
-            # Set video wallpaper
-            local video_path="$imgpath"
-            monitors=$(hyprctl monitors -j | jq -r '.[] | .name')
-            for monitor in $monitors; do
-                mpvpaper -o "$VIDEO_OPTS" "$monitor" "$video_path" &
-                sleep 0.1
-            done
+            # Set video wallpaper (skip in --noswitch, video is already playing)
+            if [[ -z "$noswitch_flag" ]]; then
+                local video_path="$imgpath"
+                monitors=$(hyprctl monitors -j | jq -r '.[] | .name')
+                for monitor in $monitors; do
+                    mpvpaper -o "$VIDEO_OPTS" "$monitor" "$video_path" &
+                    sleep 0.1
+                done
+            fi
 
             # Extract first frame for color generation
             thumbnail="$THUMBNAIL_DIR/$(basename "$imgpath").jpg"
@@ -244,7 +276,9 @@ switch() {
             if [ -f "$thumbnail" ]; then
                 matugen_args+=(image "$thumbnail")
                 generate_colors_material_args=(--path "$thumbnail")
-                create_restore_script "$video_path"
+                if [[ -z "$noswitch_flag" ]]; then
+                    create_restore_script "$video_path"
+                fi
             else
                 echo "Cannot create image to colorgen"
                 remove_restore
@@ -261,29 +295,7 @@ switch() {
 
     # Determine mode if not set (before matugen for consistency with QML MaterialThemeLoader)
     if [[ -z "$mode_flag" ]]; then
-        # Detect from colors.json background lightness (same as MaterialThemeLoader.qml)
-        if [[ -f "$STATE_DIR/user/generated/colors.json" ]]; then
-            bg=$(jq -r '.background' "$STATE_DIR/user/generated/colors.json" 2>/dev/null)
-            if [[ "$bg" =~ ^#[0-9A-Fa-f]{6}$ ]]; then
-                r=$((16#${bg:1:2})); g=$((16#${bg:3:2})); b=$((16#${bg:5:2}))
-                max=$(( r > g ? (r > b ? r : b) : (g > b ? g : b) ))
-                min=$(( r < g ? (r < b ? r : b) : (g < b ? g : b) ))
-                if (( max + min < 255 )); then
-                    mode_flag="dark"
-                else
-                    mode_flag="light"
-                fi
-            fi
-        fi
-        # Fallback to gsettings
-        if [[ -z "$mode_flag" ]]; then
-            current_mode=$(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null | tr -d "'")
-            if [[ "$current_mode" == "prefer-dark" ]]; then
-                mode_flag="dark"
-            else
-                mode_flag="light"
-            fi
-        fi
+        mode_flag=$(detect_mode_from_colors)
     fi
 
     # enforce dark mode for terminal
@@ -390,6 +402,10 @@ main() {
                 imgpath=$(jq -r '.background.wallpaperPath' "$SHELL_CONFIG_FILE" 2>/dev/null || echo "")
                 shift
                 ;;
+            --get-mode)
+                detect_mode_from_colors
+                exit 0
+                ;;
             *)
                 if [[ -z "$imgpath" ]]; then
                     imgpath="$1"
@@ -485,7 +501,7 @@ main() {
         fi
     fi
 
-    switch "$imgpath" "$mode_flag" "$type_flag" "$color_flag" "$color"
+    switch "$imgpath" "$mode_flag" "$type_flag" "$color_flag" "$color" "$noswitch_flag"
 }
 
 main "$@"
