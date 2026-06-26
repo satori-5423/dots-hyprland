@@ -44,7 +44,6 @@ Scope {
                 if (!GlobalStates.overviewOpen) {
                     searchWidget.disableExpandAnimation();
                     overviewScope.dontAutoCancelSearch = false;
-                    searchWidget.cancelSearch();
                     GlobalFocusGrab.dismiss();
                 } else {
                     if (!overviewScope.dontAutoCancelSearch) {
