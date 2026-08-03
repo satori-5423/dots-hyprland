@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+import qs
 import qs.modules.common
 import qs.modules.common.models
 import qs.modules.common.widgets
@@ -274,6 +275,34 @@ Item { // Player instance
                         TrackChangeButton {
                             iconName: "skip_next"
                             downAction: () => root.player?.next()
+                        }
+                    }
+
+                    RippleButton {
+                        id: lyricsToggleButton
+                        anchors.right: playPauseButton.left
+                        anchors.rightMargin: 6
+                        anchors.bottom: playPauseButton.bottom
+                        property real size: 44
+                        implicitWidth: size
+                        implicitHeight: size
+                        downAction: () => GlobalStates.lyricsOpen = !GlobalStates.lyricsOpen;
+
+                        buttonRadius: GlobalStates.lyricsOpen ? Appearance?.rounding.normal : size / 2
+                        colBackground: GlobalStates.lyricsOpen ? blendedColors.colPrimary : blendedColors.colSecondaryContainer
+                        colBackgroundHover: GlobalStates.lyricsOpen ? blendedColors.colPrimaryHover : blendedColors.colSecondaryContainerHover
+                        colRipple: GlobalStates.lyricsOpen ? blendedColors.colPrimaryActive : blendedColors.colSecondaryContainerActive
+
+                        contentItem: MaterialSymbol {
+                            iconSize: Appearance.font.pixelSize.huge
+                            fill: 1
+                            horizontalAlignment: Text.AlignHCenter
+                            color: GlobalStates.lyricsOpen ? blendedColors.colOnPrimary : blendedColors.colOnSecondaryContainer
+                            text: "lyrics"
+
+                            Behavior on color {
+                                animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+                            }
                         }
                     }
 
