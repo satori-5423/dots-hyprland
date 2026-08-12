@@ -56,6 +56,18 @@ elif [[ ! -z $(openrc --version) ]]; then
 
   x sudo rc-service ydotool start
   x sudo rc-service bluetooth start
+elif [[ ! -z $(dinitctl --version 2>/dev/null) ]]; then
+  # Modules loading
+  v bash -c "echo i2c-dev | sudo tee -a /etc/modules"
+  v bash -c "echo -e '-- Fix user Ydotool not working\nhl.env("YDOTOOL_SOCKET", "/tmp/.ydotool_socket")' | tee -a $HOME/.config/hypr/custom/env.lua"
+  v bash -c "echo -e 'type = process\ncommand = /usr/bin/ydotoold\nlogfile = /var/log/dinit/ydotool.log\ndepends-on = dbus\nsmooth-recovery = true' | sudo tee /etc/dinit.d/ydotool"
+  v sudo dinitctl enable userspawn
+  v sudo dinitctl enable bluetoothd
+  v sudo dinitctl enable ydotool
+  v dinitctl enable pipewire --user
+  v dinitctl enable wireplumber --user
+  v dinitctl enable pipewire-pulse --user
+  
 else
   printf "${STY_RED}"
   printf "====================INIT SYSTEM NOT FOUND====================\n"
