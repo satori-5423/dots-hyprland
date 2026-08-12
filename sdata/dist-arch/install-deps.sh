@@ -110,7 +110,7 @@ install-dinit-service-packages(){
     return 0
   fi
 
-  for pkg in userspawn-dinit bluez-dinit networkmanager-dinit pipewire-dinit pipewire-pulse-dinit wireplumber-dinit; do
+  for pkg in userspawn-dinit bluez-dinit networkmanager-dinit pipewire-dinit pipewire-pulse-dinit wireplumber-dinit power-profiles-daemon-dinit; do
     if pacman -Si "$pkg" >/dev/null 2>&1; then
       pkgs+=("$pkg")
     fi

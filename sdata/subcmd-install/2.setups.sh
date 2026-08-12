@@ -64,6 +64,7 @@ elif [[ ! -z $(dinitctl --version 2>/dev/null) ]]; then
   v sudo dinitctl enable userspawn
   v sudo dinitctl enable bluetoothd
   v sudo dinitctl enable ydotool
+  v sudo dinitctl start power-profiles-daemon
   v dinitctl enable pipewire --user
   v dinitctl enable wireplumber --user
   v dinitctl enable pipewire-pulse --user
