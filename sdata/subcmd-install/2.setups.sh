@@ -61,13 +61,21 @@ elif [[ ! -z $(dinitctl --version 2>/dev/null) ]]; then
   v bash -c "echo i2c-dev | sudo tee -a /etc/modules"
   v bash -c "echo -e '-- Fix user Ydotool not working\nhl.env(\"YDOTOOL_SOCKET\", \"/tmp/.ydotool_socket\")' | tee -a \$HOME/.config/hypr/custom/env.lua"
   v bash -c "echo -e 'type = process\ncommand = /usr/bin/ydotoold\nlogfile = /var/log/dinit/ydotool.log\ndepends-on = dbus\nsmooth-recovery = true' | sudo tee /etc/dinit.d/ydotool"
-  v sudo dinitctl enable userspawn
-  v sudo dinitctl enable bluetoothd
-  v sudo dinitctl enable ydotool
-  v sudo dinitctl start power-profiles-daemon
-  v dinitctl enable pipewire --user
-  v dinitctl enable wireplumber --user
-  v dinitctl enable pipewire-pulse --user
+  
+  # Quick check for services to avoid "service already enabled" error"
+  # System services
+  for srv in userspawn bluetoothd ydotool; do
+    if [ ! -e "/etc/dinit.d/boot.d/$srv" ]; then
+      v sudo dinitctl enable "$srv"
+    fi
+  done
+
+  # User services
+  for usrv in pipewire wireplumber pipewire-pulse; do
+    if [ ! -e "$HOME/.config/dinit.d/boot.d/$usrv" ]; then
+      v dinitctl --user enable "$usrv"
+    fi
+  done
   
 else
   printf "${STY_RED}"
