@@ -13,12 +13,18 @@ import Quickshell.Wayland
 Scope {
     id: root
 
-    // Pick the player that best describes the playing track. The native firefox bus
-    // sometimes only exposes a bare platform name ("网易云音乐", "YouTube Music") and
-    // a broken length, while the plasma-browser-integration bus carries the real
-    // title/album, so prefer a playing player with a real title and a sane length.
+    // Pick the player that best describes the playing track. Some native player
+    // buses only expose a bare platform name as the title and a broken length,
+    // while browser-integration buses carry the real title/album, so prefer a
+    // playing player with a real title and a sane length.
     readonly property MprisPlayer activePlayer: {
         const playing = Mpris.players.values.filter(p => p.isPlaying);
+        // Prefer a player that carries real artist metadata: it lets the lyric
+        // search match the correct version. Some native buses expose only a
+        // title and a broken length.
+        for (const p of playing)
+            if (root.isPlatformTitle(p.trackTitle) === false && p.length > p.position
+                && String(p.trackArtist ?? "").trim() !== "") return p;
         for (const p of playing)
             if (root.isPlatformTitle(p.trackTitle) === false && p.length > p.position) return p;
         for (const p of playing)
@@ -29,6 +35,7 @@ Scope {
     property var lines: [] // [{ time: ms, text: string }] sorted by time
     property int shownIndex: -1
     property real lyricSpacing: 10
+    property int matchThreshold: 80 // below this a search result is a guess: fall through to the next source
     property string fetchedTitle: "" // normalized title whose lyrics are currently loaded
     property string fetchingTitle: "" // normalized title currently being fetched
     property int fetchGen: 0 // bumped per new fetch; steps carry the gen they were launched under
@@ -47,18 +54,19 @@ Scope {
     property bool userDragged: false
     property bool dragging: false
     property point grabOffset: Qt.point(0, 0)
-    property real draggedCenterLeft: 0 // the window's center x while dragged; width changes keep it centered
+    property real draggedCenterLeft: 0 // the window's center x while dragged
     property real draggedTop: 0
-    property real dragWidth: 0 // window width frozen while dragging: a mid-drag surface resize can drop Hyprland's pointer grab on a bare workspace
 
     // Same top offset as the media controls popup so it doesn't touch the bar
     property real defaultTopMargin: Appearance.sizes.barHeight
 
-    // Keep the shown line in sync with playback
+    // Keep the shown line in sync with playback. The poll is fast so a line
+    // change is detected within ~100ms of its timestamp (plus the pre-roll in
+    // advance(), which absorbs the scroll duration).
     Timer {
         id: positionTimer
         running: GlobalStates.lyricsOpen
-        interval: 250
+        interval: 100
         repeat: true
         onTriggered: root.advance()
     }
@@ -90,9 +98,9 @@ Scope {
             root.advance();
         }
 
-        // Some players (e.g. plasma-browser-integration) update the title without a
-        // track-change signal; fetch on any title change instead of relying on
-        // MprisController.trackChanged alone. fetchLyrics dedups, so duplicates are cheap.
+        // Some players update the title without a track-change signal; fetch on
+        // any title change instead of relying on MprisController.trackChanged
+        // alone. fetchLyrics dedups, so duplicates are cheap.
         function onTrackTitleChanged() {
             if (GlobalStates.lyricsOpen)
                 root.fetchLyrics();
@@ -106,6 +114,8 @@ Scope {
             root.applyCurrent();
         } else {
             root.shownIndex = -1;
+            root.preRolled = false;
+            root.lines = []; // drop the lyrics so no stray signal can ever re-render them
             root.noLyrics = false;
             root.fetchingTitle = "";
             root.cancelAllFetches();
@@ -169,25 +179,73 @@ Scope {
         proc.running = true;
     }
 
+    // Structural media-platform pattern: an optional brand part followed by a
+    // media-type word (latin or CJK). Any brand ending in such a word — existing
+    // or new — matches, so no platform names are enumerated.
+    readonly property var platformNameRe: new RegExp(
+        "^(?:[^|｜,，·•、]{0,32}\\s*)?(?:Music|FM|Radio|Podcast|Player|Video|Streaming|云音乐|音乐|电台|播放器|播客|听书|短视频|收音机)$",
+        "i")
+
+    // True when a name is structurally a media platform (brand + media-type word).
+    function isPlatformLike(name): bool {
+        const s = String(name ?? "").trim();
+        return s.length > 0 && root.platformNameRe.test(s);
+    }
+
     // True when the MPRIS title is just a platform name rather than a real track
     // (players report these as placeholders while a track is loading)
     function isPlatformTitle(title): bool {
-        return /^(YouTube Music|YouTube|Spotify|Bilibili|网易云音乐|网易云|QQ音乐|Music)$/i.test(String(title ?? "").trim());
+        return root.isPlatformLike(title);
     }
 
-    // Normalize the MPRIS title for search and dedup: strip platform suffixes like
-    // " | YouTube Music" that browser integrations append. The same song arrives as
-    // several title variants, so all comparisons go through this function.
+    // Strip trailing platform-name segments after " | ", "｜", " - " or " – "
+    // (e.g. "Song | Platform" -> "Song"). A " | " / "｜" segment is stripped
+    // whenever it is short: that separator is the browser-native platform format
+    // and platform names are short, so even pure brand names are caught without
+    // a list. A " - " / "–" segment is only stripped when it is structurally
+    // platform-like, so real "Song - Artist" names and "Song-Artist" survive.
+    function stripPlatformSuffix(raw): string {
+        let s = String(raw ?? "").trim();
+        const re = /\s*([|｜]|[-–])\s*([^|｜]+)$/;
+        while (true) {
+            const m = re.exec(s);
+            if (!m) break;
+            const sep = m[1];
+            const seg = m[2].trim();
+            const pipeSep = sep !== "-" && sep !== "–";
+            if ((pipeSep && seg.length <= 32) || root.isPlatformLike(seg)) {
+                s = s.slice(0, m.index).trim();
+                continue;
+            }
+            break;
+        }
+        return s;
+    }
+
+    // Normalize the MPRIS title for search and dedup: strip trailing platform
+    // suffixes that browser integrations append, plus bracketed cover/version
+    // markers ("Title【cover ▪ Artist】", "Title (Official Video)", ...). The same
+    // song arrives as several title variants, so all comparisons go through this.
     function cleanTrackTitle(raw): string {
-        return StringUtils.cleanMusicTitle(raw)
-            .replace(/\s*[|｜]\s*(YouTube Music|YouTube|Spotify|Bilibili|网易云音乐|QQ音乐|Music)\s*$/i, "")
-            .replace(/\s*[-–]\s*(YouTube|Spotify)\s*$/i, "")
+        return root.stripPlatformSuffix(StringUtils.cleanMusicTitle(raw))
+            .replace(/【[^】]*】\s*$/, "")
+            .replace(/\s*[（(](?:official\s*(?:lyric\s*)?video|official\s*audio|lyric\s*video|audio|mv|cover|翻唱|live)[）)]\s*$/i, "")
+            .trim();
+    }
+
+    // Normalize the MPRIS artist for search and comparison: drop bracketed
+    // channel/uploader markers ("【…】") and "feat." style suffixes.
+    function cleanArtist(raw): string {
+        return String(raw ?? "")
+            .replace(/【[^】]*】/g, "")
+            .replace(/\s*[（(].*?[）)]/g, "")
+            .replace(/\s*(feat|ft)\.?.*$/i, "")
             .trim();
     }
 
     function searchQueries(): var {
         const title = root.fetchingTitle || root.cleanTrackTitle(root.activePlayer?.trackTitle ?? "");
-        const artist = root.activePlayer?.trackArtist ?? "";
+        const artist = root.cleanArtist(root.activePlayer?.trackArtist ?? "");
         if (!title) return [];
         return artist ? [ `${title} ${artist}`, title ] : [ title ];
     }
@@ -196,7 +254,7 @@ Scope {
         if (!root.activePlayer) return;
         const title = root.cleanTrackTitle(root.activePlayer.trackTitle);
         if (!title) { root.finishFetch([]); return; } // no title -> don't show stale lyrics from the previous track
-        // YouTube Music / Netease report a bare platform-name placeholder between tracks;
+        // Some players report a bare platform-name placeholder between tracks;
         // the real title arrives a moment later, so don't fetch this
         if (root.isPlatformTitle(title)) return;
         // The same song emits several signals (placeholder, clean and suffixed
@@ -230,8 +288,8 @@ Scope {
     }
 
     // A pipeline step is stale if lyrics were closed or a newer fetch started since
-    // this step was launched. The live title must NOT gate results: it flickers to a
-    // "YouTube Music" placeholder and back even mid-song, which would drop the
+    // this step was launched. The live title must NOT gate results: it can flicker
+    // to a platform-name placeholder and back even mid-song, which would drop the
     // in-flight result and strand the pipeline. Real track changes bump fetchGen.
     function stepStale(col): bool {
         if (!GlobalStates.lyricsOpen) return true;
@@ -300,7 +358,7 @@ Scope {
         const data = root.parseJson(raw);
         const songs = data?.data?.song?.list;
         if (!Array.isArray(songs) || songs.length === 0) return "";
-        return String(root.pickSong(songs, s => s.songname, s => s.albumname, s => s.interval, s => s.songmid));
+        return String(root.pickSong(songs, s => s.songname, s => s.albumname, s => s.interval, s => s.singer, s => s.songmid));
     }
 
     // --- netease ---
@@ -335,35 +393,103 @@ Scope {
         const data = root.parseJson(raw);
         const songs = data?.result?.songs;
         if (!Array.isArray(songs) || songs.length === 0) return "";
-        return String(root.pickSong(songs, s => s.name, s => s.album?.name, s => s.duration / 1000, s => s.id));
+        return String(root.pickSong(songs, s => s.name, s => s.album?.name, s => s.duration / 1000, s => s.artists, s => s.id));
     }
 
     // Pick the search result that best matches the playing track. Songs come in many
     // versions (live, covers, re-recordings, medleys) with different timelines:
-    //   - an exact title match identifies the same song and dominates,
+    //   - an exact title match identifies the same song,
+    //   - an artist match filters out covers by other artists,
     //   - a result from the same album is almost certainly the right version,
-    //   - otherwise the closest duration wins (only when the length is trustworthy).
-    function pickSong(songs, titleOf, albumOf, durationOf, idOf): string {
+    //   - a close duration is the best version discriminator: covers and live
+    //     takes drift far from the track's real length, so it outranks a bare
+    //     title match (only counted when the length is trustworthy).
+    function pickSong(songs, titleOf, albumOf, durationOf, artistOf, idOf): string {
         const title = root.cleanTrackTitle(root.activePlayer?.trackTitle ?? "").toLowerCase();
+        const artist = root.cleanArtist(root.activePlayer?.trackArtist ?? "").toLowerCase();
         const album = String(root.activePlayer?.trackAlbum ?? "").trim().toLowerCase();
         const length = root.activePlayer?.length ?? 0;
-        // The native firefox bus reports a broken length (0 or equal to the position)
+        // Some native player buses report a broken length (0 or equal to the position)
         const saneLength = length > (root.activePlayer?.position ?? 0);
         let best = null;
         let bestScore = -1;
         for (const song of songs) {
-            let score = 0;
-            // Exact name match: covers/lives/medleys carry extra markers and don't qualify
-            if (title && String(titleOf(song) ?? "").trim().toLowerCase() === title) score += 80;
-            // YouTube Music reports the page URL as the album; only reward a real name match
-            const songAlbum = String(albumOf(song) ?? "").trim().toLowerCase();
-            if (album && !album.startsWith("http") && songAlbum === album) score += 100;
-            const duration = durationOf(song);
-            if (saneLength && typeof duration === "number" && duration > 0 && length > 0)
-                score += Math.max(0, 50 - Math.abs(duration - length));
+            const score = root.scoreSong(title, artist, album, length, saneLength,
+                titleOf(song), artistOf(song), albumOf(song), durationOf(song));
             if (score > bestScore) { best = song; bestScore = score; }
         }
-        return best ? String(idOf(best) ?? "") : "";
+        // A weak best match is a guess: fall through to the next lyric source
+        if (best === null || bestScore < root.matchThreshold) return "";
+        return String(idOf(best) ?? "");
+    }
+
+    // Score how well a search result matches the playing track. An artist match
+    // plus a close duration is the strongest evidence of the *same recording* and
+    // beats a bare exact-title match, which covers / live takes / re-recordings
+    // share with the original.
+    function scoreSong(title, artist, album, length, saneLength, songTitle, songArtist, songAlbum, songDuration): number {
+        let score = 0;
+        const sTitle = String(songTitle ?? "").trim().toLowerCase();
+        if (title) {
+            // Exact name match: covers/lives/medleys carry extra markers and don't qualify
+            if (sTitle === title) score += 80;
+            // Search results often append the artist/version ("Song-Artist", "Song (Live)")
+            else if (title.length >= 2 && sTitle.startsWith(title)) score += 40;
+            // Or the source title carries a marker the result doesn't
+            else if (sTitle.length >= 2 && title.startsWith(sTitle)) score += 25;
+        }
+        if (artist && root.artistMatches(artist, songArtist)) score += 60;
+        // Some players report the page URL as the album; only reward a real name match
+        const songAlbumName = String(songAlbum ?? "").trim().toLowerCase();
+        if (album && !album.startsWith("http") && songAlbumName === album) score += 50;
+        if (saneLength && typeof songDuration === "number" && songDuration > 0 && length > 0) {
+            const diff = Math.abs(songDuration - length);
+            // Within ~2% (or 5s) of the real length it's almost certainly the same
+            // recording; fall off afterwards so live takes/medleys score far lower
+            const tolerance = Math.max(5, length * 0.02);
+            score += diff <= tolerance ? 90 : Math.max(0, 90 - (diff - tolerance) / 2);
+        }
+        return score;
+    }
+
+    // True when the result's artist(s) match the playing track's artist. Handles
+    // string names (lrclib) and arrays of {name} (qq music / netease), "feat."
+    // style suffixes, bracketed channel markers, and traditional / simplified
+    // variants via their shared latin token.
+    function artistMatches(trackArtist, songArtists): bool {
+        const ta = root.cleanArtist(trackArtist).toLowerCase();
+        if (!ta) return false;
+        const names = [];
+        if (Array.isArray(songArtists)) {
+            for (const a of songArtists) {
+                if (typeof a === "string") names.push(a);
+                else if (a && typeof a.name === "string") names.push(a.name);
+            }
+        } else {
+            names.push(String(songArtists ?? ""));
+        }
+        const taTokens = root.latinTokens(ta);
+        for (const name of names) {
+            const n = root.cleanArtist(name).toLowerCase();
+            if (!n || n.length < 2) continue;
+            if (n === ta || ta.includes(n) || n.includes(ta)) return true;
+            // Traditional/simplified variants keep their latin token
+            if (taTokens.length > 0) {
+                const nTokens = root.latinTokens(n);
+                if (nTokens.some(t => taTokens.includes(t))) return true;
+            }
+        }
+        return false;
+    }
+
+    // Lowercased ASCII alphanumeric runs (length >= 2) extracted from a name.
+    function latinTokens(s): var {
+        const out = [];
+        const re = /[a-z0-9]{2,}/g;
+        let m;
+        while ((m = re.exec(String(s).toLowerCase())) !== null)
+            out.push(m[0]);
+        return out;
     }
 
     // --- lrclib ---
@@ -372,7 +498,7 @@ Scope {
         if (!GlobalStates.lyricsOpen) return;
         const title = root.fetchingTitle;
         if (!title) { root.finishFetch([]); return; }
-        const artist = root.activePlayer?.trackArtist ?? "";
+        const artist = root.cleanArtist(root.activePlayer?.trackArtist ?? "");
         // /api/get rejects an empty artist_name with 400; /api/search accepts the
         // bare track name, so use it and pick the closest candidate below
         let url = "https://lrclib.net/api/search?track_name=" + encodeURIComponent(title);
@@ -389,20 +515,19 @@ Scope {
             let best = null;
             let bestScore = -1;
             const title = root.cleanTrackTitle(root.activePlayer?.trackTitle ?? "").toLowerCase();
+            const artist = root.cleanArtist(root.activePlayer?.trackArtist ?? "").toLowerCase();
             const album = String(root.activePlayer?.trackAlbum ?? "").trim().toLowerCase();
             const length = root.activePlayer?.length ?? 0;
             const saneLength = length > (root.activePlayer?.position ?? 0);
             for (const entry of list) {
                 if (!entry || typeof entry.syncedLyrics !== "string") continue;
-                let score = 0;
-                if (title && String(entry.trackName ?? "").trim().toLowerCase() === title) score += 80;
-                const entryAlbum = String(entry.albumName ?? "").trim().toLowerCase();
-                if (album && !album.startsWith("http") && entryAlbum === album) score += 100;
-                const dur = typeof entry.duration === "number" ? entry.duration : 0;
-                if (saneLength && dur > 0 && length > 0) score += Math.max(0, 50 - Math.abs(dur - length));
+                const score = root.scoreSong(title, artist, album, length, saneLength,
+                    entry.trackName, entry.artistName, entry.albumName, entry.duration);
                 if (score > bestScore) { best = entry; bestScore = score; }
             }
-            parsed = root.parseLrc(best?.syncedLyrics ?? "");
+            // A weak best match is a guess: prefer no lyrics over a wrong version
+            if (best !== null && bestScore >= root.matchThreshold)
+                parsed = root.parseLrc(best.syncedLyrics);
         } catch (e) { parsed = []; }
         root.finishFetch(parsed);
     }
@@ -410,6 +535,7 @@ Scope {
     function finishFetch(parsed): void {
         root.lines = parsed;
         root.shownIndex = -1;
+        root.preRolled = false;
         if (parsed.length > 0) {
             // Only a successful fetch caches the title (so a failed one is retried
             // on the next open); the window sizes itself to the visible lines
@@ -456,12 +582,23 @@ Scope {
         return root.parseLrc(root.parseJson(text.slice(start, end + 1))?.lyric ?? "");
     }
 
-    // Netease lyrics mix a JSON "rich" header (usually credits) with a plain LRC
-    // body; prefer the LRC lines when present, otherwise use the rich lines.
+    // Netease's lyric endpoint returns a JSON envelope with the synced lyric in
+    // `lrc.lyric` (a plain LRC string). Some endpoints return a JSON-per-line
+    // "rich" format instead; handle both.
     function parseNeteaseLyrics(raw): var {
+        const text = String(raw ?? "").trim();
+        if (text.startsWith("{")) {
+            const obj = root.parseJson(text);
+            const lyric = obj?.lrc?.lyric;
+            if (typeof lyric === "string") {
+                const parsed = root.parseLrc(lyric);
+                if (parsed.length > 0) return parsed;
+            }
+            return [];
+        }
         const rich = [];
         const lrc = [];
-        for (const rawLine of String(raw ?? "").split("\n")) {
+        for (const rawLine of text.split("\n")) {
             const line = rawLine.trim();
             if (!line) continue;
             if (line.startsWith("{")) {
@@ -548,8 +685,8 @@ Scope {
         // so a small bright patch under the text would be drowned out by dark
         // wallpaper on either side of the wide span.
         const textWidth = Math.max(currentLine ? currentLine.width : 0, nextLine ? nextLine.width : 0);
-        const sampleW = textWidth > 0 ? textWidth : lyricsWindow.implicitWidth;
-        const cx = lyricsWindow.margins.left + lyricsWindow.implicitWidth / 2;
+        const sampleW = textWidth > 0 ? textWidth : lyricsWindow.width;
+        const cx = lyricsWindow.margins.left + lyricsWindow.width / 2;
         // Clip the sample region to the on-screen part: wayland fills the area
         // beyond the screen with black, which would drag the median (and the text
         // colors) dark while the window is partly dragged off-screen
@@ -654,11 +791,18 @@ Scope {
 
     // ---------------- display ----------------
 
-    // The window hugs the wider of the two visible lines plus a little padding, and
-    // the position is anchored by the window's center, so the text never jumps
-    // sideways when lines of different widths swap in
+    // The window keeps a *constant* width (a fixed slot as wide as the screen)
+    // instead of hugging the text. Resizing a layer-shell surface needs a
+    // compositor round-trip, and the surface size and the horizontal margin end
+    // up committed in different frames, so any width change makes the centered
+    // text jump sideways for a frame (the shaking seen on every line change).
+    // With a fixed width and a fixed margin the text can never move horizontally.
+    // The window mask (see lyricsWindow) limits the clickable area to the two
+    // text lines, so the wide transparent band does not block windows behind it.
+    property real lyricSlotWidth: (lyricsWindow && lyricsWindow.screen) ? lyricsWindow.screen.width : 1280
     property real rowHeight: (currentLine ? currentLine.height : 0) + root.lyricSpacing
-    property real centeredLeft: Math.max(0, Math.floor((((lyricsWindow && lyricsWindow.screen) ? lyricsWindow.screen.width : 0) - (lyricsWindow ? lyricsWindow.implicitWidth : 0)) / 2))
+    // Fixed margin: the slot is centered on the screen once and never moves again
+    property real centeredLeft: Math.max(0, Math.floor((((lyricsWindow && lyricsWindow.screen) ? lyricsWindow.screen.width : 0) - root.lyricSlotWidth) / 2))
     // Lyric text sizes: a bit larger than the regular reading sizes
     property real currentLineSize: 24
     property real nextLineSize: 20
@@ -669,6 +813,14 @@ Scope {
     // while the lyrics are open (see sampleBackground/updateColors below)
     property color currentLineColorBottom: Qt.hsla(Qt.color(Appearance.colors.colPrimary).hslHue, 0.9, 0.5, 1)
     property color nextLineColor: Qt.hsla(0, 0, 0.75, 1)
+    // Pre-roll the line transition by this many ms: the 400ms scroll plus the
+    // position poll would otherwise land the next line a beat late. Tunable:
+    // raise it if lines still feel late, lower it if they feel early.
+    property int scrollLead: 500
+    // True while a pre-rolled transition is waiting for the position to catch up
+    property bool preRolled: false
+    // Last seen position (ms); a big backward jump while pre-rolled means a seek
+    property real lastPositionMs: -1
 
     function lineIndexAt(positionMs): int {
         // Full scan: correct even if a source ever returns lines out of order
@@ -680,11 +832,42 @@ Scope {
         return index;
     }
 
-    // Position timer: scroll up on normal advances, jump on seeks
+    // Position timer: scroll up on normal advances, jump on seeks. Gated on
+    // lyricsOpen: the position signal keeps firing while the window is closed,
+    // and without this guard a stale advance() would re-render the hidden lyrics.
+    // The transition is pre-rolled: the scroll starts `scrollLead` ms before the
+    // next line's timestamp, so the line lands at the top around the moment its
+    // lyrics start instead of a beat late.
     function advance(): void {
+        if (!GlobalStates.lyricsOpen) return;
         if (!root.activePlayer) return;
-        const index = root.lineIndexAt(root.activePlayer.position * 1000);
-        if (index === root.shownIndex) return;
+        const positionMs = root.activePlayer.position * 1000;
+        const index = root.lineIndexAt(positionMs);
+        // A big backward jump while waiting for a pre-rolled line means the user
+        // seeked back: abandon the pre-roll and snap to the actual line.
+        if (root.preRolled && positionMs < root.lastPositionMs - 250) {
+            root.preRolled = false;
+            root.lastPositionMs = positionMs;
+            root.resetLines(index);
+            return;
+        }
+        root.lastPositionMs = positionMs;
+        if (index === root.shownIndex) {
+            // Line unchanged; start the next transition early if its start is near
+            if (root.preRolled) {
+                root.preRolled = false; // position caught up to the pre-rolled line
+            } else if (index >= 0 && index + 1 < root.lines.length) {
+                const nextTime = root.lines[index + 1].time;
+                if (positionMs >= nextTime - root.scrollLead) {
+                    root.preRolled = true;
+                    root.showIndex(index + 1);
+                }
+            }
+            return;
+        }
+        // Waiting for the position to catch up to a pre-rolled line
+        if (root.preRolled && index === root.shownIndex - 1) return;
+        root.preRolled = false;
         if (index === root.shownIndex + 1)
             root.showIndex(index);
         else
@@ -692,6 +875,7 @@ Scope {
     }
 
     function applyCurrent(): void {
+        if (!GlobalStates.lyricsOpen) return;
         if (!root.activePlayer) return;
         root.resetLines(root.lineIndexAt(root.activePlayer.position * 1000));
     }
@@ -700,6 +884,7 @@ Scope {
     function resetLines(i): void {
         if (i === root.shownIndex) return;
         root.shownIndex = i;
+        root.preRolled = false;
         scrollAnim.stop();
         root.normalizeRest();
     }
@@ -790,7 +975,7 @@ Scope {
         // window's center is the global cursor minus that offset plus half the width.
         // Anchoring the center keeps the text put as the width changes. No clamping:
         // the window may be dragged off-screen (reopening the lyrics recenters it)
-        root.draggedCenterLeft = pos.x - (screen ? screen.x : 0) - root.grabOffset.x + lyricsWindow.implicitWidth / 2;
+        root.draggedCenterLeft = pos.x - (screen ? screen.x : 0) - root.grabOffset.x + lyricsWindow.width / 2;
         root.draggedTop = pos.y - (screen ? screen.y : 0) - root.grabOffset.y;
     }
 
@@ -812,13 +997,12 @@ Scope {
         }
         margins {
             top: root.userDragged ? root.draggedTop : root.defaultTopMargin
-            left: root.userDragged ? (root.draggedCenterLeft - lyricsWindow.implicitWidth / 2) : root.centeredLeft
+            left: root.userDragged ? (root.draggedCenterLeft - lyricsWindow.width / 2) : root.centeredLeft
         }
 
-        // Elastic width: hug the wider of the two visible lines plus a little padding,
-        // so there is no large empty click-blocking area around the text. Frozen to
-        // the press-time width while dragging (see dragWidth).
-        implicitWidth: root.dragging ? root.dragWidth : Math.max(20, Math.max(currentLine ? currentLine.width : 0, nextLine ? nextLine.width : 0) + root.lyricSpacing * 2)
+        // Constant width: never resized, so the surface size and the margin stay
+        // fixed and the centered text cannot jump sideways (see lyricSlotWidth).
+        implicitWidth: root.lyricSlotWidth
         // Two lines at the big size: the upcoming line grows to it while scrolling up
         implicitHeight: (currentLine ? currentLine.height : 0) + root.lyricSpacing + (currentLine ? currentLine.height : 0)
 
@@ -845,6 +1029,18 @@ Scope {
                 renderType: Text.QtRendering
                 font.pixelSize: root.currentLineSize
                 transformOrigin: Item.Top
+            }
+        }
+
+        // Only the two text lines are clickable (for dragging); the transparent
+        // dead space of the fixed-width window passes clicks through to whatever
+        // is underneath (media controls, bar, ...). The Region maps the items via
+        // mapToScene, so the mask follows the text as it scrolls.
+        mask: Region {
+            item: currentLine
+
+            Region {
+                item: nextLine
             }
         }
 
@@ -887,8 +1083,7 @@ Scope {
 
             onPressed: (event) => {
                 root.grabOffset = Qt.point(event.x, event.y);
-                root.dragWidth = lyricsWindow.implicitWidth;
-                root.draggedCenterLeft = lyricsWindow.margins.left + lyricsWindow.implicitWidth / 2;
+                root.draggedCenterLeft = lyricsWindow.margins.left + lyricsWindow.width / 2;
                 root.draggedTop = lyricsWindow.margins.top;
                 root.userDragged = true;
                 root.dragging = true;
