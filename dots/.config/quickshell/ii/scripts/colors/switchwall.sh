@@ -402,10 +402,6 @@ main() {
                 imgpath=$(jq -r '.background.wallpaperPath' "$SHELL_CONFIG_FILE" 2>/dev/null || echo "")
                 shift
                 ;;
-            --get-mode)
-                detect_mode_from_colors
-                exit 0
-                ;;
             *)
                 if [[ -z "$imgpath" ]]; then
                     imgpath="$1"
