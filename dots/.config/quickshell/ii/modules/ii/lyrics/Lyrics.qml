@@ -13,20 +13,97 @@ import Quickshell.Wayland
 Scope {
     id: root
 
-    // Pick the player that best describes the playing track. Some native player
-    // buses only expose a bare platform name as the title and a broken length,
-    // while browser-integration buses carry the real title/album, so prefer a
-    // playing player with a real title and a sane length.
+    // ==========================================================================
+    // Filter words & platform names: all named vocabulary lives here so the
+    // logic below only references these lists and the derived patterns. Add or
+    // adjust a platform or filter word here; everything else picks it up
+    // automatically.
+    // ==========================================================================
+
+    // Media-type words that mark a name as a platform when fused onto a single
+    // brand token ("QQ音乐", "喜马拉雅FM"). Latin or CJK. Structural detection
+    // makes new platforms match without being enumerated.
+    readonly property var mediaTypeWords: [
+        "Music", "FM", "Radio", "Podcast", "Player", "Video", "Streaming",
+        "云音乐", "音乐", "电台", "播放器", "播客", "听书", "短视频", "收音机",
+    ]
+
+    // Platforms the structural pattern can't catch and must be listed: spaced
+    // "brand + media-type word" combos ("YouTube Music", "Apple Music") and
+    // pure brands with no media-type word ("Spotify", "Bilibili", "YouTube").
+    // Spaced names are structurally indistinguishable from real song titles.
+    readonly property var platformNames: [
+        "YouTube Music", "Apple Music", "Amazon Music", "Yandex Music",
+        "Spotify", "Bilibili", "YouTube", "SoundCloud", "iTunes", "NetEase", "喜马拉雅",
+    ]
+
+    // Version/format markers appended to track titles, stripped before search
+    // ("(Official Music Video)", "(Audio)", " MV", "翻唱"). Prefix words combine
+    // freely with base words (Official Music Video, Lyric Video...); a base word
+    // alone also matches.
+    readonly property var titleMarkerPrefixes: [ "official", "music", "lyric" ]
+    readonly property var titleMarkers: [ "video", "audio", "mv", "cover", "翻唱", "live" ]
+
+    // Collaborator markers appended to artist names ("feat. Someone", "ft. Someone")
+    readonly property var artistMarkers: [ "feat", "ft" ]
+
+    // Separators a platform suffix can trail after: pipes ("Song | Spotify",
+    // short segments always stripped) and dashes ("Song - Artist", stripped only
+    // when structurally platform-like). The dash sits last so it is a literal
+    // inside character classes.
+    readonly property string pipeSeparators: "|｜"
+    readonly property string dashSeparators: "–-"
+
+    // Characters not allowed inside a platform brand (must be a single token:
+    // no whitespace or separators)
+    readonly property string brandExcludedChars: "\\s" + root.pipeSeparators + ",，·•、"
+
+    // D-Bus name prefix of browser-integration buses (their title can lag the
+    // real track, so avoid them when picking a player)
+    readonly property string browserIntegrationBusPrefix: "org.mpris.MediaPlayer2.plasma-browser-integration"
+
+    // ---- Derived patterns: don't edit these, edit the lists above ----
+    readonly property var platformNameRe: new RegExp(
+        "^(?:[^" + root.brandExcludedChars + "]{0,32})(?:" + root.mediaTypeWords.join("|") + ")$",
+        "i")
+    readonly property var titleMarkerRe: new RegExp(
+        "(?:(?:" + root.titleMarkerPrefixes.join("|") + ")\\s*)*(?:" + root.titleMarkers.join("|") + ")",
+        "i")
+    readonly property var parenTitleMarkerRe: new RegExp(
+        "\\s*[（(]" + root.titleMarkerRe.source + "[）)]\\s*$",
+        "i")
+    readonly property var bareTitleMarkerRe: new RegExp(
+        "\\s*" + root.titleMarkerRe.source + "$",
+        "i")
+    readonly property var artistMarkerRe: new RegExp(
+        "\\s*(?:" + root.artistMarkers.join("|") + ")\\.?.*$",
+        "i")
+    readonly property var platformSuffixRe: new RegExp(
+        "\\s*([" + root.pipeSeparators + root.dashSeparators + "])\\s*([^" + root.pipeSeparators + "]+)$",
+        "")
+    readonly property var trailingSeparatorsRe: new RegExp(
+        "[\\s" + root.pipeSeparators + root.dashSeparators + "]+$",
+        "")
+
+    // Pick the player that best describes the playing track: prefer a native bus
+    // with a real title (browser-integration buses can lag a real track change
+    // and keep reporting the previous track's title while playing), with the
+    // artist/sane-length tiebreakers picking the best-described candidate; fall
+    // back to any real-title player, then any playing one.
     readonly property MprisPlayer activePlayer: {
         const playing = Mpris.players.values.filter(p => p.isPlaying);
-        // Prefer a player that carries real artist metadata: it lets the lyric
-        // search match the correct version. Some native buses expose only a
-        // title and a broken length.
+        const native = p => !String(p.dbusName ?? "").startsWith(root.browserIntegrationBusPrefix);
+        const real = p => root.isPlatformTitle(p.trackTitle) === false;
         for (const p of playing)
-            if (root.isPlatformTitle(p.trackTitle) === false && p.length > p.position
+            if (native(p) && real(p) && p.length > p.position
                 && String(p.trackArtist ?? "").trim() !== "") return p;
         for (const p of playing)
-            if (root.isPlatformTitle(p.trackTitle) === false && p.length > p.position) return p;
+            if (native(p) && real(p) && p.length > p.position) return p;
+        for (const p of playing)
+            if (real(p) && p.length > p.position
+                && String(p.trackArtist ?? "").trim() !== "") return p;
+        for (const p of playing)
+            if (real(p) && p.length > p.position) return p;
         for (const p of playing)
             if (p.length > p.position) return p;
         if (playing.length > 0) return playing[0];
@@ -179,17 +256,15 @@ Scope {
         proc.running = true;
     }
 
-    // Structural media-platform pattern: an optional brand part followed by a
-    // media-type word (latin or CJK). Any brand ending in such a word — existing
-    // or new — matches, so no platform names are enumerated.
-    readonly property var platformNameRe: new RegExp(
-        "^(?:[^|｜,，·•、]{0,32}\\s*)?(?:Music|FM|Radio|Podcast|Player|Video|Streaming|云音乐|音乐|电台|播放器|播客|听书|短视频|收音机)$",
-        "i")
-
-    // True when a name is structurally a media platform (brand + media-type word).
+    // True when a name is a media platform: structurally (brand + media-type
+    // word, see mediaTypeWords) or one of the explicitly-listed brand names
+    // (see platformNames). Both live in the config block at the top.
     function isPlatformLike(name): bool {
         const s = String(name ?? "").trim();
-        return s.length > 0 && root.platformNameRe.test(s);
+        if (s.length === 0) return false;
+        if (root.platformNameRe.test(s)) return true;
+        const lower = s.toLowerCase();
+        return root.platformNames.some(n => n.toLowerCase() === lower);
     }
 
     // True when the MPRIS title is just a platform name rather than a real track
@@ -206,13 +281,12 @@ Scope {
     // platform-like, so real "Song - Artist" names and "Song-Artist" survive.
     function stripPlatformSuffix(raw): string {
         let s = String(raw ?? "").trim();
-        const re = /\s*([|｜]|[-–])\s*([^|｜]+)$/;
         while (true) {
-            const m = re.exec(s);
+            const m = root.platformSuffixRe.exec(s);
             if (!m) break;
             const sep = m[1];
             const seg = m[2].trim();
-            const pipeSep = sep !== "-" && sep !== "–";
+            const pipeSep = root.pipeSeparators.includes(sep);
             if ((pipeSep && seg.length <= 32) || root.isPlatformLike(seg)) {
                 s = s.slice(0, m.index).trim();
                 continue;
@@ -229,7 +303,12 @@ Scope {
     function cleanTrackTitle(raw): string {
         return root.stripPlatformSuffix(StringUtils.cleanMusicTitle(raw))
             .replace(/【[^】]*】\s*$/, "")
-            .replace(/\s*[（(](?:official\s*(?:lyric\s*)?video|official\s*audio|lyric\s*video|audio|mv|cover|翻唱|live)[）)]\s*$/i, "")
+            // Parenthesized markers: "(Official Music Video)", "(Audio)", "(MV)" ...
+            .replace(root.parenTitleMarkerRe, "")
+            // Bare trailing markers: " - Music Video", " MV", "翻唱" ...
+            .replace(root.bareTitleMarkerRe, "")
+            // Separators left behind by the stripping above
+            .replace(root.trailingSeparatorsRe, "")
             .trim();
     }
 
@@ -239,7 +318,7 @@ Scope {
         return String(raw ?? "")
             .replace(/【[^】]*】/g, "")
             .replace(/\s*[（(].*?[）)]/g, "")
-            .replace(/\s*(feat|ft)\.?.*$/i, "")
+            .replace(root.artistMarkerRe, "")
             .trim();
     }
 
@@ -564,7 +643,6 @@ Scope {
         root.noLyrics = true;
         root.fetchingTitle = ""; // let a later signal for this song retry
         fetchWatchdog.stop();
-        // the placeholder text sizes the window through the implicitWidth binding
     }
 
     // ---------------- parsing ----------------
