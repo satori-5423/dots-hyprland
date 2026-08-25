@@ -94,14 +94,33 @@ Scope {
         const playing = Mpris.players.values.filter(p => p.isPlaying);
         const native = p => !String(p.dbusName ?? "").startsWith(root.browserIntegrationBusPrefix);
         const real = p => root.isPlatformTitle(p.trackTitle) === false;
+        const withArtist = p => String(p.trackArtist ?? "").trim() !== "";
+        // Two buses of the same player (native + browser-integration) report the
+        // same track with near-identical length and position. The native one is
+        // preferred for its trustworthy title, but it often omits the artist
+        // (Firefox sends xesam:artist = [""]). A title-only lyric search then
+        // matches the wrong version of a same-named song (e.g. NetEase's first
+        // hit for "丹青" is a completely different song), so when the native bus
+        // lacks an artist, borrow it from a bus playing the same track.
+        const sameTrack = (a, b) => {
+            if (a === b) return false;
+            const la = a.length, lb = b.length;
+            if (!(la > 0 && lb > 0) || Math.abs(la - lb) > 2) return false;
+            const pa = a.position, pb = b.position;
+            if (pa > 0 && pb > 0 && Math.abs(pa - pb) > 5) return false;
+            return true;
+        };
         for (const p of playing)
-            if (native(p) && real(p) && p.length > p.position
-                && String(p.trackArtist ?? "").trim() !== "") return p;
+            if (native(p) && real(p) && p.length > p.position && withArtist(p)) return p;
+        for (const p of playing)
+            if (native(p) && real(p) && p.length > p.position && !withArtist(p)) {
+                const twin = playing.find(q => sameTrack(q, p) && withArtist(q));
+                if (twin) return twin;
+            }
         for (const p of playing)
             if (native(p) && real(p) && p.length > p.position) return p;
         for (const p of playing)
-            if (real(p) && p.length > p.position
-                && String(p.trackArtist ?? "").trim() !== "") return p;
+            if (real(p) && p.length > p.position && withArtist(p)) return p;
         for (const p of playing)
             if (real(p) && p.length > p.position) return p;
         for (const p of playing)
@@ -509,24 +528,33 @@ Scope {
     function scoreSong(title, artist, album, length, saneLength, songTitle, songArtist, songAlbum, songDuration): number {
         let score = 0;
         const sTitle = String(songTitle ?? "").trim().toLowerCase();
+        // A substantive (title/artist/album) match is required before the
+        // duration bonus applies: duration only discriminates between versions
+        // of an already-matched song and must never match a song on its own.
+        // Without this gate a completely unrelated track of similar length
+        // (e.g. "山中岁月", 196s, for "丹青", 193s) scores 90 and beats the
+        // match threshold, picking the wrong lyrics.
+        let matched = false;
         if (title) {
             // Exact name match: covers/lives/medleys carry extra markers and don't qualify
-            if (sTitle === title) score += 80;
+            if (sTitle === title) { score += 80; matched = true; }
             // Search results often append the artist/version ("Song-Artist", "Song (Live)")
-            else if (title.length >= 2 && sTitle.startsWith(title)) score += 40;
+            else if (title.length >= 2 && sTitle.startsWith(title)) { score += 40; matched = true; }
             // Or the source title carries a marker the result doesn't
-            else if (sTitle.length >= 2 && title.startsWith(sTitle)) score += 25;
+            else if (sTitle.length >= 2 && title.startsWith(sTitle)) { score += 25; matched = true; }
         }
-        if (artist && root.artistMatches(artist, songArtist)) score += 60;
+        if (artist && root.artistMatches(artist, songArtist)) { score += 60; matched = true; }
         // Some players report the page URL as the album; only reward a real name match
         const songAlbumName = String(songAlbum ?? "").trim().toLowerCase();
-        if (album && !album.startsWith("http") && songAlbumName === album) score += 50;
-        if (saneLength && typeof songDuration === "number" && songDuration > 0 && length > 0) {
+        if (album && !album.startsWith("http") && songAlbumName === album) { score += 50; matched = true; }
+        if (matched && saneLength && typeof songDuration === "number" && songDuration > 0 && length > 0) {
             const diff = Math.abs(songDuration - length);
             // Within ~2% (or 5s) of the real length it's almost certainly the same
-            // recording; fall off afterwards so live takes/medleys score far lower
+            // recording. Beyond the tolerance the reward must collapse fast:
+            // a slow decay let a title-prefix + loosely-timed match (e.g. the
+            // 227s "丹青客" for a 193s "丹青") beat the match threshold.
             const tolerance = Math.max(5, length * 0.02);
-            score += diff <= tolerance ? 90 : Math.max(0, 90 - (diff - tolerance) / 2);
+            score += diff <= tolerance ? 90 : Math.max(0, 20 - (diff - tolerance) * 2);
         }
         return score;
     }
