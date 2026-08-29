@@ -42,7 +42,7 @@ Scope {
     // freely with base words (Official Music Video, Lyric Video...); a base word
     // alone also matches.
     readonly property var titleMarkerPrefixes: [ "official", "music", "lyric" ]
-    readonly property var titleMarkers: [ "video", "audio", "mv", "cover", "翻唱", "live" ]
+    readonly property var titleMarkers: [ "video", "audio", "mv", "cover", "翻唱", "live", "完整版" ]
 
     // Collaborator markers appended to artist names ("feat. Someone", "ft. Someone")
     readonly property var artistMarkers: [ "feat", "ft" ]
@@ -214,6 +214,7 @@ Scope {
             root.lines = []; // drop the lyrics so no stray signal can ever re-render them
             root.noLyrics = false;
             root.fetchingTitle = "";
+            root.fetchedTitle = ""; // invalidate: reopening must re-fetch, the cache no longer describes a loaded track
             root.cancelAllFetches();
             root.normalizeRest(); // clear the text so the closed window shows nothing
         }
@@ -351,7 +352,25 @@ Scope {
     function fetchLyrics(): void {
         if (!root.activePlayer) return;
         const title = root.cleanTrackTitle(root.activePlayer.trackTitle);
-        if (!title) { root.finishFetch([]); return; } // no title -> don't show stale lyrics from the previous track
+        if (!title) {
+            // No title (player between tracks / stopped): not a fetchable state.
+            // finishFetch([]) would burn the retry budget and end in a "No lyrics
+            // found" placeholder that then blocks a replay of the last song via
+            // the fetchedTitle dedup. Clear the display and the fetch caches so a
+            // real title (even the same one again) re-fetches cleanly.
+            root.cancelAllFetches();
+            root.fetchingTitle = "";
+            root.fetchedTitle = "";
+            root.fetchAttempts = 0;
+            root.lines = [];
+            root.shownIndex = -1;
+            root.preRolled = false;
+            root.noLyrics = false;
+            fetchRetryTimer.stop();
+            fetchWatchdog.stop();
+            root.normalizeRest(); // no title -> don't show stale lyrics from the previous track
+            return;
+        }
         // Some players report a bare platform-name placeholder between tracks;
         // the real title arrives a moment later, so don't fetch this
         if (root.isPlatformTitle(title)) return;
@@ -527,7 +546,11 @@ Scope {
     // share with the original.
     function scoreSong(title, artist, album, length, saneLength, songTitle, songArtist, songAlbum, songDuration): number {
         let score = 0;
-        const sTitle = String(songTitle ?? "").trim().toLowerCase();
+        // Normalize the result title the same way as the playing track's title,
+        // so version markers ("完整版"...) and platform suffixes don't break the
+        // comparison: a track can be titled "拉美西斯的樂章(完整版)" while the
+        // search result is plain "拉美西斯的乐章".
+        const sTitle = root.cleanTrackTitle(String(songTitle ?? "")).toLowerCase();
         // A substantive (title/artist/album) match is required before the
         // duration bonus applies: duration only discriminates between versions
         // of an already-matched song and must never match a song on its own.
@@ -542,6 +565,9 @@ Scope {
             else if (title.length >= 2 && sTitle.startsWith(title)) { score += 40; matched = true; }
             // Or the source title carries a marker the result doesn't
             else if (sTitle.length >= 2 && title.startsWith(sTitle)) { score += 25; matched = true; }
+            // Traditional/simplified variants of the same title
+            // ("拉美西斯的樂章" vs "拉美西斯的乐章")
+            else if (root.cjkAgreement(title, sTitle) >= 0.75) { score += 60; matched = true; }
         }
         if (artist && root.artistMatches(artist, songArtist)) { score += 60; matched = true; }
         // Some players report the page URL as the album; only reward a real name match
@@ -580,6 +606,10 @@ Scope {
             const n = root.cleanArtist(name).toLowerCase();
             if (!n || n.length < 2) continue;
             if (n === ta || ta.includes(n) || n.includes(ta)) return true;
+            // Traditional/simplified variants of the same artist: same length,
+            // 3+ chars and >=2/3 char-wise agreement ("劉至佳" vs "刘至佳").
+            // Shorter names are too ambiguous to bridge this way.
+            if (root.cjkAgreement(ta, n) >= 2 / 3) return true;
             // Traditional/simplified variants keep their latin token
             if (taTokens.length > 0) {
                 const nTokens = root.latinTokens(n);
@@ -597,6 +627,25 @@ Scope {
         while ((m = re.exec(String(s).toLowerCase())) !== null)
             out.push(m[0]);
         return out;
+    }
+
+    // Fraction of CJK characters that agree position-wise between two same-length
+    // strings. Used to bridge traditional/simplified variants that differ only in
+    // glyph form ("拉美西斯的樂章" vs "拉美西斯的乐章" = 5/6, "劉至佳" vs
+    // "刘至佳" = 2/3). Returns 0 for different lengths or <2 CJK chars.
+    function cjkAgreement(a, b): real {
+        const sa = String(a ?? "").toLowerCase();
+        const sb = String(b ?? "").toLowerCase();
+        if (!sa || !sb || sa.length !== sb.length || sa.length < 2) return 0;
+        let cjk = 0, same = 0;
+        for (let i = 0; i < sa.length; ++i) {
+            const ca = sa[i], cb = sb[i];
+            if (/[\u4e00-\u9fff]/.test(ca) || /[\u4e00-\u9fff]/.test(cb)) {
+                cjk++;
+                if (ca === cb) same++;
+            }
+        }
+        return cjk >= 2 ? same / cjk : 0;
     }
 
     // --- lrclib ---
@@ -669,6 +718,10 @@ Scope {
     // gives feedback instead of silently going blank
     function giveUpNoLyrics(): void {
         root.noLyrics = true;
+        // Invalidate the fetched-title cache too: it still names the previous
+        // successfully-fetched track, so replaying that track would be deduped
+        // in fetchLyrics and never re-fetched, leaving this placeholder stuck.
+        root.fetchedTitle = "";
         root.fetchingTitle = ""; // let a later signal for this song retry
         fetchWatchdog.stop();
     }
