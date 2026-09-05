@@ -287,6 +287,7 @@ Item { // Player instance
                         implicitWidth: size
                         implicitHeight: size
                         downAction: () => GlobalStates.lyricsOpen = !GlobalStates.lyricsOpen;
+                        altAction: () => GlobalStates.lyricsPickerOpen = true;
 
                         buttonRadius: GlobalStates.lyricsOpen ? Appearance?.rounding.normal : size / 2
                         colBackground: GlobalStates.lyricsOpen ? blendedColors.colPrimary : blendedColors.colSecondaryContainer
