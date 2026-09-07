@@ -22,7 +22,9 @@ Item {
     }
 
     function filePath(context): string {
-        const slug = `${context.title}-${context.artist}-${Math.round(Number(context.length ?? 0))}`
+        const album = String(context.album ?? "").trim();
+        const base = `${context.title}-${context.artist}-${album ? album + "-" : ""}${Math.round(Number(context.length ?? 0))}`;
+        const slug = base
             .replace(/[^A-Za-z0-9_\u4e00-\u9fff.-]+/g, "_")
             .replace(/^\.+|\.+$/g, "")
             .slice(0, 180);
