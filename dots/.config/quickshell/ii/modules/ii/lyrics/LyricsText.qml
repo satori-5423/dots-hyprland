@@ -28,12 +28,37 @@ QtObject {
         const lyric = root.parseJson(text.slice(start, end + 1))?.lyric ?? "";
         let lines = root.parseLrc(lyric);
         if (lines.length > 0) return lines;
-        try {
-            const decode = typeof atob === "function" ? atob
-                : typeof Qt.atob === "function" ? Qt.atob : null;
-            if (decode) lines = root.parseLrc(decode(lyric));
-        } catch (e) {}
+        // Try base64 only when the lyric field is actually Base64.
+        if (root.isBase64(lyric)) {
+            try {
+                lines = root.parseLrc(root.base64Decode(lyric));
+            } catch (e) {
+                lines = [];
+            }
+        }
         return lines;
+    }
+
+    // Base64 lyric: no "[mm:ss]" markers, only base64 chars/padding.
+    function isBase64(s): bool {
+        const v = String(s ?? "").trim();
+        return v.length >= 4
+            && !v.includes("[")
+            && /^[A-Za-z0-9+/]*={0,2}$/.test(v);
+    }
+
+    // Decode Base64 to UTF-8; "" when no decoder is available.
+    function base64Decode(s): string {
+        const b64 = String(s ?? "").trim();
+        const raw = typeof atob === "function" ? atob
+            : typeof Qt.atob === "function" ? Qt.atob : null;
+        if (!raw) return "";
+        const binary = raw(b64);
+        try {
+            return decodeURIComponent(escape(binary));
+        } catch (e) {
+            return binary;
+        }
     }
 
     function parseLrcLine(line): var {

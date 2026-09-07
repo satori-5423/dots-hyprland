@@ -61,6 +61,9 @@ Scope {
     property string contextAlbum: ""
     property real contextLength: 0
     property real contextPosition: 0
+    property string shownTitle: ""
+    property string shownArtist: ""
+    property var fetchContext: null
     property string fetchedKey: ""
     property string fetchingKey: ""
     property int fetchGen: 0
@@ -126,7 +129,7 @@ Scope {
     Connections {
         target: root.cache
         function onHit(key, lines) {
-            if (key !== root.fetchingKey) return;
+            if (!root.fetchContext || key !== root.cache.key(root.fetchContext)) return;
             root.sources.generation++;
             root.sources.cancel();
             if (!GlobalStates.lyricsOpen) GlobalStates.lyricsOpen = true;
@@ -134,12 +137,14 @@ Scope {
             root.shownIndex = -1;
             root.fetchingKey = "";
             root.fetchedKey = key;
+            root.shownTitle = root.contextTitle;
+            root.shownArtist = root.contextArtist;
             fetchWatchdog.stop();
             root.normalizeRest();
             root.applyCurrent();
         }
         function onMiss(key) {
-            if (key !== root.fetchingKey) return;
+            if (!root.fetchContext || key !== root.cache.key(root.fetchContext)) return;
             root.startSourceFetch();
         }
     }
@@ -152,6 +157,8 @@ Scope {
             root.shownIndex = -1;
             root.fetchingKey = "";
             root.fetchedKey = root.cache.key(context);
+            root.shownTitle = context.title;
+            root.shownArtist = context.artist;
             root.noLyrics = false;
             root.normalizeRest();
             GlobalStates.lyricsPickerOpen = false;
@@ -219,6 +226,10 @@ Scope {
             return;
         }
         if (context.key === root.fetchedKey || context.key === root.fetchingKey) return;
+        // Keep the current display when the same song re-emits (e.g. length updates).
+        const sameSong = root.shownTitle === context.title
+            && root.shownArtist === context.artist
+            && root.shownTitle !== "";
         root.fetchGen++;
         root.cancelAllFetches();
         root.contextTitle = context.title;
@@ -227,8 +238,8 @@ Scope {
         root.contextLength = context.length;
         root.contextPosition = context.position;
         root.fetchingKey = context.key;
+        root.fetchContext = context;
         root.fetchAttempts = 0;
-        root.noLyrics = false;
         root.sources.title = context.title;
         root.sources.artist = context.artist;
         root.sources.album = context.album;
@@ -236,9 +247,12 @@ Scope {
         root.sources.position = context.position;
         root.sources.generation = root.fetchGen;
         fetchRetryTimer.stop();
-        root.lines = [];
-        root.shownIndex = -1;
-        root.normalizeRest();
+        if (!sameSong) {
+            root.noLyrics = false;
+            root.lines = [];
+            root.shownIndex = -1;
+            root.normalizeRest();
+        }
         root.cache.lookup(context);
         fetchWatchdog.restart();
     }
@@ -289,6 +303,10 @@ Scope {
         root.preRolled = false;
         if (parsed.length > 0) {
             root.fetchedKey = root.fetchingKey;
+            root.shownTitle = root.contextTitle;
+            root.shownArtist = root.contextArtist;
+            if (root.fetchContext)
+                root.cache.save(root.fetchContext, parsed);
             root.fetchingKey = "";
             root.noLyrics = false;
             root.fetchAttempts = 0;

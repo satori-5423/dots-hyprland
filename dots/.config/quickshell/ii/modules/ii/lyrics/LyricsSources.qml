@@ -196,13 +196,17 @@ Item {
     }
 
     function considerResults(): void {
-        if (!root.qqFinished || !root.neteaseFinished) return;
+        // Use the first source that matches; fall back to LRCLIB only when both miss.
         if (root.qqResult !== null || root.neteaseResult !== null) {
+            root.generation++;
+            root.cancel();
             const qq = root.qqResult;
             const netease = root.neteaseResult;
             const winner = qq === null ? netease : netease === null ? qq : qq.score >= netease.score ? qq : netease;
             root.resolved(winner.lines);
-        } else root.startLrclib();
+        } else if (root.qqFinished && root.neteaseFinished) {
+            root.startLrclib();
+        }
     }
 
     function startLrclib(): void {

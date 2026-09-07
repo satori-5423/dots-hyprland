@@ -29,9 +29,7 @@ Item {
         return `${root.directory}/${slug || "track"}.json`;
     }
 
-    // Starts an async lookup; the caller waits for either hit(key, lines) or
-    // miss(key) before running a network fetch, so a cached track never triggers
-    // a wasted request.
+    // Async lookup; caller waits for hit() or miss() before fetching.
     function lookup(context): void {
         const wanted = root.key(context);
         lookupFile.path = root.filePath(context);
