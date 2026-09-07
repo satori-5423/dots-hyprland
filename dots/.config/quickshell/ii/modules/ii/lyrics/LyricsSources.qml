@@ -196,17 +196,14 @@ Item {
     }
 
     function considerResults(): void {
-        // Use the first source that matches; fall back to LRCLIB only when both miss.
+        // Wait for both sources, then keep the higher-scoring match.
+        if (!root.qqFinished || !root.neteaseFinished) return;
         if (root.qqResult !== null || root.neteaseResult !== null) {
-            root.generation++;
-            root.cancel();
             const qq = root.qqResult;
             const netease = root.neteaseResult;
             const winner = qq === null ? netease : netease === null ? qq : qq.score >= netease.score ? qq : netease;
             root.resolved(winner.lines);
-        } else if (root.qqFinished && root.neteaseFinished) {
-            root.startLrclib();
-        }
+        } else root.startLrclib();
     }
 
     function startLrclib(): void {
