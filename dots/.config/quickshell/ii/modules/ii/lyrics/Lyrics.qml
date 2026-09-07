@@ -305,8 +305,16 @@ Scope {
             root.fetchedKey = root.fetchingKey;
             root.shownTitle = root.contextTitle;
             root.shownArtist = root.contextArtist;
-            if (root.fetchContext)
-                root.cache.save(root.fetchContext, parsed);
+            if (root.fetchContext) {
+                const curr = root.currentTrackContext();
+                // Save under the live context: a stale length during a track switch
+                // would otherwise create a wrong-length cache file.
+                if (curr
+                    && curr.title === root.fetchContext.title
+                    && curr.artist === root.fetchContext.artist
+                    && Number(curr.length ?? 0) > 0)
+                    root.cache.save(curr, parsed);
+            }
             root.fetchingKey = "";
             root.noLyrics = false;
             root.fetchAttempts = 0;
