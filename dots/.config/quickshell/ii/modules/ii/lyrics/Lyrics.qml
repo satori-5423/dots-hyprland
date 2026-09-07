@@ -125,16 +125,22 @@ Scope {
 
     Connections {
         target: root.cache
-        function onHit(lines) {
+        function onHit(key, lines) {
+            if (key !== root.fetchingKey) return;
             root.sources.generation++;
             root.sources.cancel();
             if (!GlobalStates.lyricsOpen) GlobalStates.lyricsOpen = true;
             root.lines = lines;
             root.shownIndex = -1;
             root.fetchingKey = "";
-            root.fetchedKey = root.cache.key(root.currentTrackContext());
+            root.fetchedKey = key;
+            fetchWatchdog.stop();
             root.normalizeRest();
             root.applyCurrent();
+        }
+        function onMiss(key) {
+            if (key !== root.fetchingKey) return;
+            root.startSourceFetch();
         }
     }
 
@@ -213,7 +219,6 @@ Scope {
             return;
         }
         if (context.key === root.fetchedKey || context.key === root.fetchingKey) return;
-        if (root.cache.lookup(context)) return;
         root.fetchGen++;
         root.cancelAllFetches();
         root.contextTitle = context.title;
@@ -234,6 +239,13 @@ Scope {
         root.lines = [];
         root.shownIndex = -1;
         root.normalizeRest();
+        root.cache.lookup(context);
+        fetchWatchdog.restart();
+    }
+
+    function startSourceFetch(): void {
+        if (!GlobalStates.lyricsOpen) return;
+        if (root.fetchingKey === "") return;
         fetchWatchdog.restart();
         root.sources.generation = root.fetchGen;
         root.sources.start();
@@ -571,12 +583,10 @@ Scope {
             StyledText {
                 id: currentLine
                 anchors.horizontalCenter: parent.horizontalCenter
-                width: parent.width
                 height: root.lyricLineHeight
                 horizontalAlignment: Text.AlignHCenter
                 renderType: Text.QtRendering
                 wrapMode: Text.NoWrap
-                elide: Text.ElideRight
                 font.pixelSize: root.currentLineSize
                 color: root.currentLineColorBottom
                 Behavior on color { ColorAnimation { duration: 300 } }
@@ -584,12 +594,10 @@ Scope {
             StyledText {
                 id: nextLine
                 anchors.horizontalCenter: parent.horizontalCenter
-                width: parent.width
                 height: root.lyricLineHeight
                 horizontalAlignment: Text.AlignHCenter
                 renderType: Text.QtRendering
                 wrapMode: Text.NoWrap
-                elide: Text.ElideRight
                 font.pixelSize: root.currentLineSize
                 transformOrigin: Item.Top
             }

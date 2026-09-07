@@ -8,7 +8,8 @@ import qs.modules.common.functions
 Item {
     id: root
     readonly property string directory: FileUtils.trimFileProtocol(`${Directories.cache}/lyrics`)
-    signal hit(var lines)
+    signal hit(var key, var lines)
+    signal miss(var key)
 
     function key(context): string {
         return JSON.stringify({
@@ -28,12 +29,14 @@ Item {
         return `${root.directory}/${slug || "track"}.json`;
     }
 
-    function lookup(context): bool {
+    // Starts an async lookup; the caller waits for either hit(key, lines) or
+    // miss(key) before running a network fetch, so a cached track never triggers
+    // a wasted request.
+    function lookup(context): void {
         const wanted = root.key(context);
         lookupFile.path = root.filePath(context);
         lookupFile.expectedKey = wanted;
         lookupFile.reload();
-        return false;
     }
 
     function save(context, lines): void {
@@ -54,9 +57,15 @@ Item {
         onLoaded: {
             try {
                 const record = JSON.parse(lookupFile.text());
-                if (record?.key === lookupFile.expectedKey && Array.isArray(record.lines)) root.hit(record.lines);
-            } catch (e) {}
+                if (record?.key === lookupFile.expectedKey && Array.isArray(record.lines))
+                    root.hit(lookupFile.expectedKey, record.lines);
+                else
+                    root.miss(lookupFile.expectedKey);
+            } catch (e) {
+                root.miss(lookupFile.expectedKey);
+            }
         }
+        onLoadFailed: (error) => root.miss(lookupFile.expectedKey)
     }
 
     FileView {
