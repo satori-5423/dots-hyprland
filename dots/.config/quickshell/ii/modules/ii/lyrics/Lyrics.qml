@@ -21,11 +21,27 @@ Scope {
     }
     readonly property string browserIntegrationBusPrefix: "org.mpris.MediaPlayer2.plasma-browser-integration"
 
+    function toArray(list): var {
+        const out = [];
+        if (!list) return out;
+        for (let i = 0; i < list.length; ++i) out.push(list[i]);
+        return out;
+    }
+
+    // Browsers publish a second, metadata-poorer MPRIS bus next to the browser
+    // integration (firefox reports the channel name as artist and no track length).
+    // MprisController already filters those duplicates out -- use that list instead of
+    // every raw player, or lyrics get looked up with an artist nothing ever matches.
+    readonly property var candidatePlayers: {
+        const filtered = root.toArray(MprisController.players);
+        return filtered.length > 0 ? filtered : root.toArray(Mpris.players.values);
+    }
+
     readonly property MprisPlayer activePlayer: {
-        const playing = Mpris.players.values.filter(p => p.isPlaying);
+        const playing = root.candidatePlayers.filter(p => p.isPlaying);
         const native = p => !String(p.dbusName ?? "").startsWith(root.browserIntegrationBusPrefix);
         const real = p => String(p.trackTitle ?? "").trim() !== "";
-        const withArtist = p => String(p.trackArtist ?? "").trim() !== "";
+        const withArtist = p => root.cleanArtist(p.trackArtist) !== "";
         const sameTrack = (a, b) => {
             if (a === b) return false;
             const la = a.length, lb = b.length;
@@ -50,7 +66,11 @@ Scope {
         for (const p of playing)
             if (p.length > p.position) return p;
         if (playing.length > 0) return playing[0];
-        return MprisController.activePlayer;
+        // Nothing is playing: fall back to the tracked player, but only when it is part
+        // of the deduplicated pool, so a paused browser bus cannot hijack the lyrics.
+        const tracked = MprisController.activePlayer;
+        if (tracked && root.candidatePlayers.indexOf(tracked) !== -1) return tracked;
+        return root.candidatePlayers.length > 0 ? root.candidatePlayers[0] : tracked;
     }
     property var lines: []
     property int shownIndex: -1
@@ -70,8 +90,47 @@ Scope {
     property int fetchAttempts: 0
     property bool noLyrics: false
     property string noLyricsText: "No lyrics found"
+    property string giveUpKey: ""
+    property real giveUpAt: 0
+    // Rounds of "sources returned nothing" before a track is declared lyric-less.
+    readonly property int maxFetchAttempts: 8
+    // After giving up, retry the same context at most once per cooldown instead of
+    // hitting the sources on every tick.
+    readonly property int giveUpCooldown: 30000
 
     property bool lyricsOpen: GlobalStates.lyricsOpen
+
+    function norm(value): string {
+        return String(value ?? "").toLowerCase().replace(/[\s\u3000]+/g, " ").trim();
+    }
+
+    // Store/channel names some players report instead of the performer. Treated as
+    // "no artist": matching lyrics against them can never succeed, while title-only
+    // matching still can.
+    function isPlaceholderArtist(name): bool {
+        const value = String(name ?? "").trim().toLowerCase();
+        if (value === "") return true;
+        return /^(youtube music|youtube|spotify|soundcloud|deezer|bandcamp|apple music|tidal|unknown artist|various artists|va)\b/.test(value);
+    }
+
+    function cleanArtist(name): string {
+        return root.isPlaceholderArtist(name) ? "" : String(name ?? "").trim();
+    }
+
+    // Firefox / YouTube Music append the store name to the media title (observed:
+    // "声声慢 | YouTube Music"), which breaks matching against every lyrics source.
+    function cleanTitle(raw): string {
+        const value = String(raw ?? "").trim();
+        const stripped = value
+            .replace(/\s*[|｜·•]\s*(youtube music|youtube|spotify|soundcloud|deezer|apple music|tidal|bandcamp)\s*$/i, "")
+            .trim();
+        return stripped !== "" ? stripped : value;
+    }
+
+    function trackKey(title, artist, length): string {
+        const seconds = Number(length ?? 0);
+        return [root.norm(title), root.norm(artist), seconds > 0 ? Math.round(seconds) : 0].join("\u001f");
+    }
 
     property bool userDragged: false
     property bool dragging: false
@@ -130,13 +189,18 @@ Scope {
         target: root.cache
         function onHit(key, lines) {
             if (!root.fetchContext || key !== root.cache.key(root.fetchContext)) return;
+            // The overlay was closed while the file was loading: don't resurrect it.
+            if (!GlobalStates.lyricsOpen) return;
             root.sources.generation++;
             root.sources.cancel();
-            if (!GlobalStates.lyricsOpen) GlobalStates.lyricsOpen = true;
             root.lines = lines;
             root.shownIndex = -1;
             root.fetchingKey = "";
-            root.fetchedKey = key;
+            // `fetchedKey`/`fetchingKey` are track *dedupe* keys, not cache keys: filling it
+            // with the cache key made every refetch tick miss the early return and reload
+            // the cache file again. Use the live context when it is still the same track.
+            const live = root.currentTrackContext();
+            root.fetchedKey = (live && root.cache.key(live) === key) ? live.key : root.fetchContext.key;
             root.shownTitle = root.contextTitle;
             root.shownArtist = root.contextArtist;
             fetchWatchdog.stop();
@@ -156,7 +220,9 @@ Scope {
             root.lines = lines;
             root.shownIndex = -1;
             root.fetchingKey = "";
-            root.fetchedKey = root.cache.key(context);
+            root.fetchedKey = context.key;
+            root.giveUpKey = "";
+            root.giveUpAt = 0;
             root.shownTitle = context.title;
             root.shownArtist = context.artist;
             root.noLyrics = false;
@@ -178,6 +244,8 @@ Scope {
             root.noLyrics = false;
             root.fetchingKey = "";
             root.fetchedKey = "";
+            root.giveUpKey = "";
+            root.giveUpAt = 0;
             root.cancelAllFetches();
             root.normalizeRest();
         }
@@ -186,8 +254,8 @@ Scope {
     function currentTrackContext(): var {
         const player = root.activePlayer;
         if (!player) return null;
-        const title = String(player.trackTitle ?? "").trim();
-        const artist = String(player.trackArtist ?? "").trim();
+        const title = root.cleanTitle(player.trackTitle);
+        const artist = root.cleanArtist(player.trackArtist);
         const album = String(player.trackAlbum ?? "").trim();
         const length = Number(player.length ?? 0);
         return {
@@ -197,8 +265,7 @@ Scope {
             length: length,
             position: Number(player.position ?? 0),
             url: String(player.trackUrl ?? ""),
-            key: [title.toLowerCase(), artist.toLowerCase(),
-                length > 0 ? Math.round(length) : 0].join("\u001f")
+            key: root.trackKey(title, artist, length)
         };
     }
 
@@ -215,6 +282,8 @@ Scope {
             root.contextPosition = 0;
             root.fetchingKey = "";
             root.fetchedKey = "";
+            root.giveUpKey = "";
+            root.giveUpAt = 0;
             root.fetchAttempts = 0;
             root.lines = [];
             root.shownIndex = -1;
@@ -226,10 +295,13 @@ Scope {
             return;
         }
         if (context.key === root.fetchedKey || context.key === root.fetchingKey) return;
+        // Already declared lyric-less for this exact context: wait out the cooldown
+        // instead of re-running the sources on every tick.
+        if (context.key === root.giveUpKey && Date.now() - root.giveUpAt < root.giveUpCooldown) return;
         // Keep the current display when the same song re-emits (e.g. length updates).
-        const sameSong = root.shownTitle === context.title
-            && root.shownArtist === context.artist
-            && root.shownTitle !== "";
+        const sameSong = root.shownTitle !== ""
+            && root.norm(root.shownTitle) === root.norm(context.title)
+            && root.norm(root.shownArtist) === root.norm(context.artist);
         root.fetchGen++;
         root.cancelAllFetches();
         root.contextTitle = context.title;
@@ -247,7 +319,8 @@ Scope {
         root.sources.position = context.position;
         root.sources.generation = root.fetchGen;
         fetchRetryTimer.stop();
-        if (!sameSong) {
+        // A retry after a "no lyrics" verdict keeps showing it until one succeeds.
+        if (!sameSong && context.key !== root.giveUpKey) {
             root.noLyrics = false;
             root.lines = [];
             root.shownIndex = -1;
@@ -275,7 +348,7 @@ Scope {
         repeat: false
         onTriggered: {
             if (!GlobalStates.lyricsOpen) return;
-            if (root.fetchAttempts >= 5) { root.giveUpNoLyrics(); root.normalizeRest(); return; }
+            if (root.fetchAttempts >= root.maxFetchAttempts) { root.giveUpNoLyrics(); root.normalizeRest(); return; }
             fetchWatchdog.restart();
             root.sources.generation = root.fetchGen;
             root.sources.start();
@@ -284,7 +357,10 @@ Scope {
 
     Timer {
         id: fetchWatchdog
-        interval: 8000
+        // Longer than the sources' own curl timeouts (search + lyric + fallback can
+        // legitimately take >20s): a shorter watchdog killed healthy in-flight
+        // requests and restarted them, so a slow network could never finish a round.
+        interval: 30000
         repeat: false
         onTriggered: {
             if (!GlobalStates.lyricsOpen) return;
@@ -305,22 +381,24 @@ Scope {
             root.fetchedKey = root.fetchingKey;
             root.shownTitle = root.contextTitle;
             root.shownArtist = root.contextArtist;
+            root.giveUpKey = "";
+            root.giveUpAt = 0;
             if (root.fetchContext) {
+                // Save under the live context when it still describes the same song: the
+                // length/album captured at fetch start may have been missing or may have
+                // drifted since (browser players re-report `mpris:length`).
                 const curr = root.currentTrackContext();
-                // Save under the live context: a stale length during a track switch
-                // would otherwise create a wrong-length cache file.
-                if (curr
-                    && curr.title === root.fetchContext.title
-                    && curr.artist === root.fetchContext.artist
-                    && Number(curr.length ?? 0) > 0)
-                    root.cache.save(curr, parsed);
+                const same = curr
+                    && root.norm(curr.title) === root.norm(root.fetchContext.title)
+                    && root.norm(curr.artist) === root.norm(root.fetchContext.artist);
+                root.cache.save(same ? curr : root.fetchContext, parsed);
             }
             root.fetchingKey = "";
             root.noLyrics = false;
             root.fetchAttempts = 0;
             fetchRetryTimer.stop();
             fetchWatchdog.stop();
-        } else if (root.fetchAttempts < 5) {
+        } else if (root.fetchAttempts < root.maxFetchAttempts) {
             root.fetchAttempts++;
             fetchRetryTimer.restart();
         } else {
@@ -332,6 +410,8 @@ Scope {
 
     function giveUpNoLyrics(): void {
         root.noLyrics = true;
+        root.giveUpKey = root.fetchingKey;
+        root.giveUpAt = Date.now();
         root.fetchedKey = "";
         root.fetchingKey = "";
         fetchWatchdog.stop();
