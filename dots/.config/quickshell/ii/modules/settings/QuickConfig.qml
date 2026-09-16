@@ -72,7 +72,9 @@ ContentPage {
                     id: wallpaperPreview
                     anchors.fill: parent
                     fillMode: Image.PreserveAspectCrop
-                    source: Config.options.background.wallpaperPath
+                    property string wallpaperPath: Config.options.background.wallpaperPath ?? ""
+                    property bool wallpaperIsVideo: wallpaperPath.endsWith(".mp4") || wallpaperPath.endsWith(".webm") || wallpaperPath.endsWith(".mkv") || wallpaperPath.endsWith(".avi") || wallpaperPath.endsWith(".mov")
+                    source: wallpaperIsVideo ? Config.options.background.thumbnailPath : wallpaperPath
                     cache: false
                     layer.enabled: true
                     layer.effect: OpacityMask {
