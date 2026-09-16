@@ -41,7 +41,10 @@ apply_kitty() {
     sed -i "s/${colorlist[$i]} #/${colorvalues[$i]#\#}/g" "$STATE_DIR"/user/generated/terminal/kitty-theme.conf
   done
 
-  # Reload
+  # Reload (skip if II_NO_TERM_RELOAD is set — avoids disrupting running scripts)
+  if [[ -n "${II_NO_TERM_RELOAD:-}" ]]; then
+    return
+  fi
   if ! pgrep -f kitty >/dev/null; then
     return
   fi
@@ -64,8 +67,17 @@ apply_anyterm() {
 
   sed -i "s/\$alpha/$term_alpha/g" "$STATE_DIR/user/generated/terminal/sequences.txt"
 
+  # Skip the current terminal to avoid interfering with running scripts
+  # If II_NO_TERM_RELOAD is set, only generate files, don't inject into any terminal
+  local current_tty=$(tty 2>/dev/null)
   for file in /dev/pts/*; do
     if [[ $file =~ ^/dev/pts/[0-9]+$ ]]; then
+      if [[ -n "${II_NO_TERM_RELOAD:-}" ]]; then
+        continue
+      fi
+      if [[ "$file" == "$current_tty" ]]; then
+        continue
+      fi
       {
       cat "$STATE_DIR"/user/generated/terminal/sequences.txt >"$file"
       } & disown || true

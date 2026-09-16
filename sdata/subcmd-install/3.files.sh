@@ -233,6 +233,13 @@ fi
 v gen_firstrun
 v dedup_and_sort_listfile "${INSTALLED_LISTFILE}" "${INSTALLED_LISTFILE}"
 
+# Re-apply theme so all apps match after files were overwritten
+# Same as the QML LightDarkPreferenceButton: switchwall.sh --noswitch (auto-detects current mode)
+if [[ -f "$XDG_CONFIG_HOME/quickshell/ii/scripts/colors/switchwall.sh" ]]; then
+  export ILLOGICAL_IMPULSE_VIRTUAL_ENV="${ILLOGICAL_IMPULSE_VIRTUAL_ENV:-$XDG_STATE_HOME/quickshell/.venv}"
+  II_NO_TERM_RELOAD=1 bash "$XDG_CONFIG_HOME/quickshell/ii/scripts/colors/switchwall.sh" --noswitch > /dev/null 2>&1 &
+fi
+
 # Prevent hyprland from not fully loaded
 sleep 1
 try hyprctl reload
