@@ -95,8 +95,9 @@ Scope {
     // Rounds of "sources returned nothing" before a track is declared lyric-less.
     readonly property int maxFetchAttempts: 8
     // After giving up, retry the same context at most once per cooldown instead of
-    // hitting the sources on every tick.
-    readonly property int giveUpCooldown: 30000
+    // hitting the sources on every 3s tick. Kept short: the failures may have been
+    // transient, and a long cooldown would delay lyrics that would otherwise appear.
+    readonly property int giveUpCooldown: 10000
 
     property bool lyricsOpen: GlobalStates.lyricsOpen
 
@@ -196,6 +197,12 @@ Scope {
             root.lines = lines;
             root.shownIndex = -1;
             root.fetchingKey = "";
+            // A previous track may have given up (or this track was fetched with worse
+            // metadata): a hit means we do have lyrics, so drop the "No lyrics found"
+            // verdict, otherwise it stays on screen until the first line is reached.
+            root.noLyrics = false;
+            root.giveUpKey = "";
+            root.giveUpAt = 0;
             // `fetchedKey`/`fetchingKey` are track *dedupe* keys, not cache keys: filling it
             // with the cache key made every refetch tick miss the early return and reload
             // the cache file again. Use the live context when it is still the same track.
@@ -367,7 +374,16 @@ Scope {
             if (root.fetchingKey === "") return;
             root.fetchGen++;
             root.cancelAllFetches();
-            root.fetchAttempts = 0;
+            // A watchdog trip is a failed round too. Resetting the counter here used to
+            // restart the sources endlessly whenever a round took longer than the
+            // watchdog (slow network), leaving the overlay blank forever instead of
+            // ever reaching the "no lyrics" verdict.
+            root.fetchAttempts++;
+            if (root.fetchAttempts >= root.maxFetchAttempts) {
+                root.giveUpNoLyrics();
+                root.normalizeRest();
+                return;
+            }
             root.sources.generation = root.fetchGen;
             root.sources.start();
         }
@@ -605,9 +621,17 @@ Scope {
         if (index >= 0 && index < root.lines.length) {
             currentLine.text = root.lines[index].text;
             nextLine.text = index + 1 < root.lines.length ? root.lines[index + 1].text : "";
-        } else if (root.noLyrics) {
+        } else if (root.noLyrics && root.lines.length === 0) {
+            // Only claim "no lyrics" when nothing at all is loaded: while a track is playing
+            // but has not reached its first line yet, the slot has to stay empty.
             currentLine.text = root.noLyricsText;
             nextLine.text = "";
+        } else if (root.lines.length > 0) {
+            // Loaded, but the track is still before its first line (long intro). Show that
+            // line in the upcoming slot rather than an empty area, so a song with lyrics
+            // never looks like "no lyrics".
+            currentLine.text = "";
+            nextLine.text = root.lines[0].text;
         } else {
             currentLine.text = "";
             nextLine.text = "";
